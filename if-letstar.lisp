@@ -5,7 +5,7 @@
 
 (in-package :if-letstar)
 
-(defmacro if-let* (bindings &optional body-1 body-2)
+(defmacro if-let* (bindings &body bodies)
   "Creates new variable bindings, and conditionally executes either BODY-1 or BODY-2.
 
 BINDINGS must be either single binding of the form:
@@ -25,16 +25,17 @@ previously bound by the IF-LET*.
 
 Execution of IF-LET* causes the form BODY-2 to evaluate if any INITIAL-FORM evaluates to NIL.
 If all INITIAL-FORMs evaluate to true, then the form BODY-1 is executed."
-  (let* ((binding-list (if (and (consp bindings) (symbolp (car bindings)))
-                           (list bindings)
-                           bindings))
-         (variables (mapcar #'car binding-list)))
-    `(let ,variables
-       (if (block nil
-          ,@(loop for b in binding-list
-                  for v in variables
-                  collect `(setq ,v (let (,b) ,v))
-                  collect `(unless ,v (return nil)))
-          t)
-        ,body-1
-        ,body-2))))
+  (destructuring-bind (body-1 body-2) bodies
+    (let* ((binding-list (if (and (consp bindings) (symbolp (car bindings)))
+                             (list bindings)
+                             bindings))
+           (variables (mapcar #'car binding-list)))
+      `(let ,variables
+         (if (block nil
+               ,@(loop for b in binding-list
+                       for v in variables
+                       collect `(setq ,v (let (,b) ,v))
+                       collect `(unless ,v (return nil)))
+               t)
+             ,body-1
+             ,body-2)))))
