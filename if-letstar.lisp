@@ -169,6 +169,7 @@ If all INITIAL-FORMs evaluate to true, then the second-last form of BODIES is ex
                                                                            ;; of the host implementation
                                                                            (let (,(car b)) ,(caar b)))
                                                                  ,@(if (cdr b)
-                                                                       `(,(bind (cdr b)))))))
+                                                                       `(,(bind (cdr b)))
+                                                                       `(,(caar b))))))
                                                      (bind binding-list)))
                                               ,@forms)))))))
