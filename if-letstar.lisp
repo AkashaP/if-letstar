@@ -39,22 +39,26 @@ effect."
          (binding-list (if (and (consp bindings) (symbolp (car bindings)))
                            (list bindings)
                            bindings))
-         (variables (mapcar #'car binding-list))
-         (decls (if (or (eq 'declare (caar bodies))
-                        (eq 'locally (caar bodies)))
-                    (car bodies)))
-         (body (remove decls bodies)))
-    `(let ,binding-list
-       ,@(append (if decls `(,decls)) 
-                 `((if (and ,@variables)
-                       ,(car body)
-                       ,@(if (cdr on-fail)
-                             `((let ((it (remove nil
-                                                 `(,,@(loop for var in variables
-                                                            collect `(and (not ,var) ',var))))))
-                                 ,@(cdr on-fail)
-                                 ,(cadr body)))
-                             (cdr body))))))))
+         (variables (mapcar #'car binding-list)))
+    (multiple-value-bind (decls body)
+        (loop for b in bodies
+              if (and (listp b)
+                      (or (eq 'declare (car b))
+                          (eq 'locally (car b))))
+                collect b into decls
+              else collect b into body
+              finally (return (values decls body)))
+      `(let ,binding-list
+         ,@decls 
+         (if (and ,@variables)
+             ,(car body)
+             ,@(if (cdr on-fail)
+                   `((let ((it (remove nil
+                                       `(,,@(loop for var in variables
+                                                  collect `(and (not ,var) ',var))))))
+                       ,@(cdr on-fail)
+                       ,(cadr body)))
+                   (cdr body)))))))
 
 (defmacro ifn-let (bindings else then)
   "IF-LET, but the else clause comes first."
@@ -90,23 +94,27 @@ implicit PROGN."
          (binding-list (if (and (consp bindings) (symbolp (car bindings)))
                            (list bindings)
                            bindings))
-         (variables (mapcar #'car binding-list))
-         (decls (if (or (eq 'declare (caar body))
-                        (eq 'locally (caar body)))
-                    (car body)))
-         (body (remove decls body)))
-    `(let ,binding-list
-       ,@(if decls `(,decls))
-       ,(if (not (cdr on-fail))
-            `(when (and ,@variables)
-               ,@body)
-            `(if (and ,@variables)
-                 (progn ,@body)
-                 (let ((it (remove nil
-                                   `(,,@(loop for var in variables
-                                              collect `(and (not ,var) ',var))))))
-                   ,@(cdr on-fail)
-                   nil))))))
+         (variables (mapcar #'car binding-list)))
+    (multiple-value-bind (decls body)
+        (loop for b in body
+              if (and (listp b)
+                      (or (eq 'declare (car b))
+                          (eq 'locally (car b))))
+                collect b into decls
+              else collect b into body
+              finally (return (values decls body)))
+      `(let ,binding-list
+         ,@decls
+         ,(if (not (cdr on-fail))
+              `(when (and ,@variables)
+                 ,@body)
+              `(if (and ,@variables)
+                   (progn ,@body)
+                   (let ((it (remove nil
+                                     `(,,@(loop for var in variables
+                                                collect `(and (not ,var) ',var))))))
+                     ,@(cdr on-fail)
+                     nil)))))))
 
 (defmacro when-let* (bindings &body body) 
   "Creates new symbol bindings, and conditionally executes BODY.
@@ -135,31 +143,47 @@ Any declarations can come below the bindings form, before the start of any signi
 [Execution of WHEN-LET* stops immediately if any INITIAL-FORM evaluates to NIL.
 If all INITIAL-FORMs evaluate to true, then BODY is executed as an implicit
 PROGN.]"
+
+
+
+  
   (let* ((on-fail (find 'on-fail bindings :key 'car))
          (bindings (remove on-fail bindings))
          (binding-list (if (and (consp bindings) (symbolp (car bindings)))
                            (list bindings)
                            bindings))
-         (variables (mapcar #'car binding-list))
-         (fake-variables (loop repeat (length variables)
-                               for (s v) in binding-list
-                               collect `(,s ,v)))
-         (fake-to-bindings (loop for (f v1) in fake-variables
+         (values-list (mapcar #'cadr binding-list))
+         (target-variables (mapcar #'car binding-list))
+         (fake-vars (loop repeat (length bindings) collect (gensym)))
+         (fake-to-bindings (loop for f in fake-vars
                                  for (s v2) in binding-list
                                  collect `(,s ,f)))
-         )
-    `(let ,(mapcar 'car fake-variables)
-       ,(if binding-list
-            (labels ((bind (b)
-                       `(if (setq ,@(car b))
-                            ,(if (cdr b)
-                                 `(,@(bind (cdr b)))
-                                 `(let* ,fake-to-bindings
-                                    ,@body))
-                            ,@(when (cdr on-fail)
-                                `((let ((it ',(caar b))) 
-                                    ,@(cdr on-fail)))))))
-              (bind fake-variables))))))
+         (fake-variables (loop repeat (length bindings)
+                               for s in fake-vars
+                               for v in values-list
+                               collect `(,s ,v))))
+    (multiple-value-bind (decls body)
+        (loop for b in body
+              if (and (listp b)
+                      (or (eq 'declare (car b))
+                          (eq 'locally (car b))))
+                collect b into decls
+              else collect b into body
+              finally (return (values decls body)))
+      `(let ,(mapcar 'cadr fake-to-bindings)
+         ,(if binding-list
+              (labels ((bind (b tgt)
+                         `(if (setq ,@(car b))
+                              ,(if (cdr b)
+                                   `(let ((,(car tgt) ,(caar b)))
+                                      ,(bind (cdr b) (cdr tgt)))
+                                   `(let* ,fake-to-bindings
+                                      ,@decls
+                                      ,@body))
+                              ,@(when (cdr on-fail)
+                                  `((let ((it ',(caar b))) 
+                                      ,@(cdr on-fail)))))))
+                (bind fake-variables target-variables)))))))
 
 (defmacro if-let* (bindings &body bodies)
   "Creates new symbol bindings, and conditionally executes either the second-last or last form of BODIES.
@@ -191,24 +215,33 @@ If all INITIAL-FORMs evaluate to true, then the second-last form of BODIES is ex
          (binding-list (if (and (consp bindings) (symbolp (car bindings)))
                            (list bindings)
                            bindings))
-         (variables (mapcar #'car binding-list)))
-    `(let ,variables
-       ,@(loop for forms on bodies
-               while (and (listp forms)
-                          (listp (car forms))
-                          (or (eq 'declare (caar forms))
-                              (eq 'locally (caar forms))))
-               if (car forms) 
-                 collect (car forms) into result
-               finally (return `(,@result (if ,(if binding-list
-                                                   (labels ((bind (b)
-                                                              `(if (setq
-                                                                    ,@(car b))
-                                                                   ,@(if (cdr b)
-                                                                         `(,(bind (cdr b)))
-                                                                         `(,(caar b)))
-                                                                   ,@(when (cdr on-fail)
-                                                                       `((let ((it ',(caar b))) 
-                                                                           ,@(cdr on-fail)))))))
-                                                     (bind binding-list)))
-                                              ,@forms)))))))
+         (values-list (mapcar #'cadr binding-list))
+         (target-variables (mapcar #'car binding-list))
+         (fake-vars (loop repeat (length bindings) collect (gensym)))
+         (fake-variables (loop repeat (length bindings)
+                               for s in fake-vars
+                               for v in values-list
+                               collect `(,s ,v)))
+         (true-to-fake (mapcar 'list target-variables fake-vars)))
+    (multiple-value-bind (decls body)
+        (loop for b in bodies
+              if (and (listp b)
+                      (or (eq 'declare (car b))
+                          (eq 'locally (car b))))
+                collect b into decls
+              else collect b into body
+              finally (return (values decls body)))
+      `(let ,fake-vars
+         (if ,(if binding-list
+                  (labels ((bind (b tgt)
+                             `(if (setq ,@(car b))
+                                  ,(if (cdr b)
+                                       `(let ((,(car tgt) ,(caar b)))
+                                          ,(bind (cdr b) (cdr tgt)))
+                                       t)
+                                  ,@(when (cdr on-fail)
+                                      `((let ((it ',(caar b))) 
+                                          ,@(cdr on-fail)))))))
+                    (bind fake-variables target-variables)))
+             ,@(loop for body in body
+                     collect `(let ,true-to-fake ,@decls ,body)))))))
